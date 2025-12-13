@@ -1,0 +1,73 @@
+name: Build module (arm64)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: ksu-webui/package.json
+
+      - name: Set up Rust toolchain
+        uses: moonrepo/setup-rust@v1
+        with:
+          channel: 'nightly'
+          targets: 'aarch64-linux-android'
+          components: 'rust-src'
+
+      - name: Set up NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25b
+
+      - name: Override NDK environment variables
+        run: |
+          echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+
+      - name: Configure Rust Linker for Android
+        run: |
+          NDK_ROOT="${{ steps.setup-ndk.outputs.ndk-path }}"
+          API_LEVEL=21
+
+          # For aarch64-linux-android
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${API_LEVEL}-clang" >> $GITHUB_ENV
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_AR=$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-ar" >> $GITHUB_ENV
+
+      - name: Build Zygisk C++ module
+        run: $ANDROID_NDK_HOME/ndk-build -C zygisk/jni
+
+      - name: Build Rust CLI
+        run: |
+          cargo build --release --target=aarch64-linux-android --manifest-path cli/Cargo.toml
+
+      - name: Build WebUI
+        run: |
+          cd ksu-webui
+          npm install
+          npx parcel build src/index.html --dist-dir ../magisk/webroot --no-source-maps --no-cache
+
+      - name: Package Magisk module
+        run: |
+          mkdir -p magisk/zygisk
+          cp zygisk/libs/arm64-v8a/libzygisk_detach.so magisk/zygisk/arm64-v8a.so
+          cp cli/target/aarch64-linux-android/release/cli magisk/detach-arm64
+          cd magisk
+          zip -r ../zygisk-detach.zip .
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zygisk-detach
+          path: zygisk-detach.zip
