@@ -1,4 +1,5 @@
 #include <android/log.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +12,8 @@
 #include "parcel.hpp"
 #include "zygisk.hpp"
 
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, "zygisk-detach", __VA_ARGS__)
+#define LOGD(fmt, ...) \
+    __android_log_print(ANDROID_LOG_DEBUG, "zygisk-detach", "[%d] " fmt, __LINE__, ##__VA_ARGS__)
 
 static uint8_t* DETACH_TXT;
 static uint8_t HEADERS_LEN;
@@ -24,7 +26,9 @@ struct PParcel {
 
 static inline void detach(PParcel* parcel, uint32_t code) {
     auto p = FakeParcel{parcel->data, 0};
+
     if (!p.enforceInterface(parcel->data_size, HEADERS_LEN)) return;
+
     uint32_t pkg_len = p.readInt32();
     uint32_t pkg_len_b = pkg_len * 2 - 1;
     if (pkg_len_b > UINT8_MAX) return;
@@ -36,8 +40,7 @@ static inline void detach(PParcel* parcel, uint32_t code) {
     while ((dlen = DETACH_TXT[i])) {
         uint8_t* dptr = DETACH_TXT + i + sizeof(dlen);
         i += sizeof(dlen) + dlen;
-        if (dlen != pkg_len_b)
-            continue;
+        if (dlen != pkg_len_b) continue;
         if (!memcmp(dptr, pkg_ptr, dlen)) {
             *pkg_ptr = 0;
             return;
@@ -90,25 +93,27 @@ class ZygiskDetach : public zygisk::ModuleBase {
             else if (sdk == 29) HEADERS_LEN = 2 * sizeof(uint32_t);
             else HEADERS_LEN = 1 * sizeof(uint32_t);
         } else {
-            LOGD("WARN: could not get sdk version (fallback=3)");
+            LOGD("ERROR __system_property_get: %s", strerror(errno));
             HEADERS_LEN = 3 * sizeof(uint32_t);
         }
 
         ino_t inode;
         dev_t dev;
-        if (getBinder(&inode, &dev)) {
-            this->api->pltHookRegister(dev, inode, "_ZN7android14IPCThreadState8transactEijRKNS_6ParcelEPS1_j",
-                                       (void**)&transact_hook, (void**)&transact_orig);
-            if (this->api->pltHookCommit()) {
-                LOGD("Loaded!");
-            } else {
-                LOGD("ERROR: pltHookCommit");
-                api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
-            }
-        } else {
-            LOGD("ERROR: Module not found!");
+        if (!getBinder(&inode, &dev)) {
+            LOGD("ERROR: Could not get libbinder");
             api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+            return;
         }
+
+        this->api->pltHookRegister(dev, inode, "_ZN7android14IPCThreadState8transactEijRKNS_6ParcelEPS1_j",
+                                   (void**)&transact_hook, (void**)&transact_orig);
+        if (!this->api->pltHookCommit()) {
+            LOGD("ERROR: pltHookCommit");
+            api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+            return;
+        }
+
+        LOGD("Loaded!");
     }
 
    private:
@@ -138,20 +143,23 @@ class ZygiskDetach : public zygisk::ModuleBase {
     size_t read_companion(int fd) {
         off_t size;
         if (read(fd, &size, sizeof(size)) < 0) {
-            LOGD("ERROR: read companion size");
+            LOGD("ERROR read: %s", strerror(errno));
             return 0;
         }
         if (size <= 0) {
-            LOGD("ERROR: detach.bin <= 0");
+            LOGD("ERROR read_companion: size=%ld", size);
             return 0;
         }
         DETACH_TXT = (uint8_t*)malloc(size + 1);
+
         off_t size_read = 0;
         while (size_read < size) {
-            size_read += read(fd, DETACH_TXT, size - size_read);
-            if (size_read < 0) {
-                LOGD("ERROR: read companion, %ld bytes", size_read);
+            ssize_t ret = read(fd, DETACH_TXT, size - size_read);
+            if (ret < 0) {
+                LOGD("ERROR read: %s", strerror(errno));
                 return 0;
+            } else {
+                size_read += ret;
             }
         }
         DETACH_TXT[size] = 0;
@@ -163,31 +171,28 @@ static void companion_handler(int remote_fd) {
     off_t size = 0;
     int fd = open("/data/adb/zygisk-detach/detach.bin", O_RDONLY);
     if (fd == -1) {
-        LOGD("ERROR: companion open");
-        if (write(remote_fd, &size, sizeof(size)) < 0)
-            LOGD("ERROR: write remote_fd 1");
-        return;
+        LOGD("ERROR open: %s", strerror(errno));
+        goto bail;
     }
 
     struct stat st;
     if (fstat(fd, &st) == -1) {
-        LOGD("ERROR: fstat");
-        if (write(remote_fd, &size, sizeof(size)) < 0)
-            LOGD("ERROR: write remote_fd 2");
-        close(fd);
-        return;
+        LOGD("ERROR fstat: %s", strerror(errno));
+        goto bail;
     }
     size = st.st_size;
+
+bail:
     if (write(remote_fd, &size, sizeof(size)) < 0) {
-        LOGD("ERROR: write remote_fd 3");
+        LOGD("ERROR write: %s", strerror(errno));
+        size = 0;
+    }
+    if (fd > 0) {
+        if (size > 0 && sendfile(remote_fd, fd, NULL, size) < 0) {
+            LOGD("ERROR sendfile: %s", strerror(errno));
+        }
         close(fd);
-        return;
     }
-    if (size > 0) {
-        if (sendfile(remote_fd, fd, NULL, size) < 0)
-            LOGD("ERROR: sendfile");
-    }
-    close(fd);
 }
 
 REGISTER_ZYGISK_MODULE(ZygiskDetach)

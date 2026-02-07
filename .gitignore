@@ -2,8 +2,10 @@
 *.so
 b.sh
 test*
-magisk/detach-*
+magisk/bin/*/detach
+magisk/bin/*/ksu_profile
 magisk/webroot/*
 *.log
 zygisk-rust
 aidl/*.aidl*
+.clangd

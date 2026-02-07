@@ -1,13 +1,27 @@
 #!/system/bin/sh
 
+chmod -R +x "$MODPATH/bin/"
+
 if [ -n "$KSU" ]; then
 	ui_print "- KernelSU detected. Make sure you are using a Zygisk module!"
+
+	uid=$(dumpsys package "com.android.vending" 2>&1 | grep -m1 "uid")
+	uid=${uid#*=} uid=${uid%% *}
+	if [ -z "$uid" ]; then
+		uid=$(dumpsys package "com.android.vending" 2>&1 | grep -m1 "userId")
+		uid=${uid#*=} uid=${uid%% *}
+	fi
+	if [ -z "$uid" ]; then
+		ui_print "* UID could not be found for com.android.vending"
+		return 1
+	fi
+
+	if ! OP=$("$MODPATH/bin/$ARCH/ksu_profile" "$uid" "com.android.vending" 2>&1); then
+		ui_print "ERROR ksu_profile: $OP"
+	fi
 fi
 
-mv -f "$MODPATH/detach-${ARCH}" "$MODPATH/detach"
-rm "$MODPATH"/detach-*
-chmod +x "$MODPATH/detach"
-
+mv -f "$MODPATH/bin/$ARCH/detach" "$MODPATH/detach"
 mkdir -p /data/adb/zygisk-detach/
 
 DBIN="/data/adb/zygisk-detach/detach.bin"

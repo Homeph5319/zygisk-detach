@@ -508,14 +508,14 @@ fn kill_store() -> IOResult<()> {
         if !cmdline.read(&mut buf).is_ok_and(|n| n > 0) {
             continue;
         }
-        if buf.eq(PKG) {
-            if let Some(pid) = proc.components().nth(2) {
-                let pid = pid.as_os_str().to_string_lossy();
-                let Ok(pid) = pid.parse::<i32>() else {
-                    continue;
-                };
-                unsafe { kill(pid, 9) };
-            }
+        if buf.eq(PKG)
+            && let Some(pid) = proc.components().nth(2)
+        {
+            let pid = pid.as_os_str().to_string_lossy();
+            let Ok(pid) = pid.parse::<i32>() else {
+                continue;
+            };
+            unsafe { kill(pid, 9) };
         }
     }
     Ok(())
